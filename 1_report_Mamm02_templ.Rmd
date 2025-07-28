@@ -1,0 +1,1215 @@
+---
+title: "Metabarcoding analysis (library template) primer Mamm02"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+# This is a template for metabarcoding analysis done with obitools2. Replace "template" word with your library name. Check if you have replicates within the same primer plates or different. Check the list of steps in the end of the document. {.hidden .unlisted .unnumbered}
+
+Load dependencies and set the working directory
+
+*Code for this part is hidden in the rendered report*
+
+```{r libaries, echo=FALSE, message=FALSE}
+library("metabaR")
+library("ggplot2")
+library("stringr")
+library(reshape2)
+library(dplyr)
+library(randomcoloR)
+library(plotly)
+
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+lib_dir <- "/Users/elena/PycharmProjects/ngs_pipelines/template"
+```
+
+-   Define the palette for positive control visualization
+
+```{r echo=FALSE}
+mypalette<-function(seed=0){
+  N<-1500
+  color<-matrix(nrow=N,ncol=3)
+  i=1;
+  for (major in 1:3) {
+    for (minor in 1:2) {
+      for (k in 0:249) {
+	color[i,major]<-249
+	vec_minor<-1:3
+	vec_minor<-vec_minor[-major]
+	color[i,vec_minor[minor]]<-k
+	color[i,vec_minor[-minor]]<-0
+	i<-i+1;
+      }
+    }
+  }
+  hexcolor<-matrix(as.character(as.hexmode(color)),nrow=N,ncol=3)
+  palette<-paste('#',hexcolor[,1],hexcolor[,2],hexcolor[,3],sep="")
+  set.seed(seed)
+  sample(palette)
+}
+pal<-mypalette(44)
+```
+
+-   Define generic function
+
+```{r echo=FALSE}
+## this function keep only the rank containing in the rank_vector and format the taxonomic lineage
+filter_on_rank <- function(taxo_path, rank_vector){
+  rank_filter <- lapply(taxo_path, str_detect, rank_vector);
+  filtered_matrix <- matrix(unlist(rank_filter), 
+                            nrow=length(unlist(rank_filter[1])))
+  filtered_res <- as.vector(taxo_path[apply(filtered_matrix, 2, any)])
+  available_rank <- apply(filtered_matrix, 1, any)
+  new_path <- lapply(seq_along(available_rank),
+                     function(ind){
+                       ranknames <- gsub(".*@", "@", filtered_res)
+                       if (rank_vector[ind] %in% ranknames) {
+                         filtered_res[which(rank_vector[ind]==ranknames)]}
+                       else {
+                         indn <- 1
+                         for(index in ind:1){
+                           if(rank_vector[index] %in% ranknames){
+                             indn <- which(rank_vector[index]==ranknames)
+                             break
+                           }
+                         }
+                         # paste the last taxon name with the active rank and undefined
+                         paste(gsub("@.*", "", filtered_res[indn]), 
+                               paste("(", 
+                                     paste(gsub("@", "", rank_vector[ind]),
+                                           "undefined", 
+                                           sep=" "),
+                                     ")", 
+                                     sep=""), 
+                               sep=" ")
+                       }
+                     })
+  new_path
+}
+
+## format all ecotag path
+format_ecotag_path <- function(path, ranks=rank){
+  rank_vector <- paste("@", ranks, sep="")
+  tmp_data <- strsplit(path, ":")
+  filtered_data <- lapply(tmp_data, filter_on_rank, rank_vector)
+  
+  formated_data <- lapply(filtered_data, 
+                          function(taxo_value){
+                            gsub("@.*", "", as.character(taxo_value))})
+  out <- as.data.frame(t(matrix(unlist(formated_data), 
+                                nrow=length(unlist(formated_data[1])))))
+  names(out) <- ranks
+  out
+}
+
+## Boxplot of reads count sample type
+ggBoxTypeStat <- function(metabarlist){
+  type <- metabarlist$pcrs[, c("type", "control_type"), drop=F]
+  type[type$type=="control" & type$control_type=="positive", "type"] <- "positive"
+  type[type$type=="control" & type$control_type=="sequencing", "type"] <- "sequencing"
+  type[type$type=="control" & type$control_type=="pcr", "type"] <- "pcr"
+  type[type$type=="control" & type$control_type=="extraction", "type"] <- "extraction"
+  
+  samples <- metabarlist$reads
+  sample_occur <- samples
+  sample_occur[sample_occur>0] <- 1
+  
+  to_plot_reads <- data.frame("value"=c(as.vector(rowSums(samples)), 
+                                        as.vector(rowSums(samples)[rowSums(samples)>0])), 
+                              "samples"=gsub("__[0-9]+", "", c(names(rowSums(samples)), 
+                                                               names(rowSums(samples)[rowSums(samples)>0]))),
+                              "type"=type[c(names(rowSums(samples)), 
+                                            names(rowSums(samples)[rowSums(samples)>0])), "type"],
+                              "data_type"=c(rep("reads", length(names(rowSums(samples)))), 
+                                            rep("reads (>0)", length(names(rowSums(samples)[rowSums(samples)>0])))),
+                              stringsAsFactors = F)
+  
+  to_plot_occur <- data.frame("value"=c(as.vector(rowSums(sample_occur)), 
+                                        as.vector(rowSums(sample_occur)[rowSums(sample_occur)>0])), 
+                              "samples"=gsub("__[0-9]+", "", c(names(rowSums(sample_occur)), 
+                                                               names(rowSums(sample_occur)[rowSums(sample_occur)>0]))),
+                              "type"=type[c(names(rowSums(sample_occur)), 
+                                            names(rowSums(sample_occur)[rowSums(sample_occur)>0])), "type"],
+                              "data_type"=c(rep("occurence", length(names(rowSums(sample_occur)))), 
+                                            rep("occurence (>0)", length(names(rowSums(sample_occur)[rowSums(sample_occur)>0])))),
+                              stringsAsFactors = F)
+  
+  to_plot <- rbind(to_plot_reads, to_plot_occur)
+  
+  ggplot(to_plot, aes(x=type, y=value, group=type)) + 
+    facet_wrap(~data_type, scales = "free_y", ncol = 2) +
+    geom_boxplot() +
+    theme(axis.text.x = element_text(angle=45,  hjust = 1)) +
+    ggtitle("Comparison between control and sample")
+}
+
+show_stats <- function(library){
+  data.frame("number of samples" = length(unique(gsub("__PP[1-4]+", "", library$pcrs[library$pcrs$type == "sample","sample_id"]))), "number of controls" = length(unique(gsub("__PP[1-4]", "", library$pcrs[library$pcrs$type == "control","sample_id"]))),
+             "number of motus" = nrow(library$motus), "number of taxa" = length(unique(library$motus$scientific_name)), "mean number of reads" = round(mean(rowSums(library$reads))), "total reads" = sum(rowSums(library$reads)))
+}
+
+
+motus_freq <- function(library){
+  motus <- library$reads
+  motus_occur <- as.data.frame(apply(motus, 2, function(col){
+    col[col>0] <- gsub("__PP[1-4]", "", names(col[col>0]))
+    col
+  }))
+  
+  freq <- do.call(rbind, lapply(colnames(motus_occur), function(coln){
+    col <- motus_occur[,coln]
+    occur <- table(col)[table(col)<5]
+    data.frame(motus=rep(coln,length(names(occur))),
+               scientific_name=rep(library$motus[coln, "scientific_name"],
+                                   length(names(occur))),
+               samples=names(occur), 
+               occurence=as.vector(occur))
+  }))
+  
+  freq <- freq %>%
+    group_by(motus, scientific_name) %>%
+    summarize(freq_1 = sum(occurence[occurence == 1]),
+              freq_2 = sum(occurence[occurence == 2]/2),
+              freq_3 = sum(occurence[occurence == 3])/3,
+              freq_4 = sum(occurence[occurence == 4]/4), .groups = 'drop') %>% arrange(desc(freq_4))
+  return(freq)
+}
+```
+
+## Load data
+
+```{r echo=FALSE, message=F}
+file_obitab = file.path(lib_dir, "template_Mamm02_ecotag_annot.tab")
+file_ngsfilter = file.path(lib_dir, "ngsfilters/template.ngsfilter")
+file_samples = file.path(lib_dir, "metabar_samples.csv")
+
+if (!file.exists(file_obitab)) {
+    stop(paste("cannot open file_obitab", file_obitab, ": No such file or directory"))
+}
+if (!file.exists(file_ngsfilter)) {
+    stop(paste("cannot open file_ngsfilter", file_ngsfilter, 
+        ": No such file or directory"))
+}
+if (!file.exists(file_samples)) {
+    stop(paste("cannot open file_samples", file_samples, 
+        ": No such file or directory"))
+}
+obi <- read.csv2(file_obitab, header = T, check.names = F, 
+    stringsAsFactors = F, sep = "\t")
+
+reads <- t(obi[, grep("sample\\:", colnames(obi))])
+rownames(reads) <- gsub("sample\\:", "", rownames(reads))
+colnames(reads) <- obi$id
+
+motus <- obi[, grep("sample\\:", colnames(obi), invert = T)]
+rownames(motus) <- motus$id
+motus <- motus[, -match("id", colnames(motus))]
+pcrs <- read_ngsfilter(file = file_ngsfilter, additional.sep = "=", sep = "\t")
+rownames(pcrs) <- pcrs$pcr_id
+pcrs <- pcrs[, -match("pcr_id", colnames(pcrs))]
+samples <- data.frame(row.names = pcrs$sample_id)
+
+
+if (!all(rownames(reads) %in% rownames(pcrs))) {
+    stop("cannot continue, one or several rownames in the metabarlist table `reads`\n         are not in the rownames of the metabarlist table `pcrs`")
+}
+reads <- reads[match(rownames(pcrs), rownames(reads)), ]
+reads[is.na(reads)] <- 0
+rownames(reads) <- rownames(pcrs)
+pcrs$plate_row <- gsub("[.]", "", pcrs$plate_row)
+out <- metabarlist_generator(reads, motus, pcrs, samples)
+
+template <- out
+
+change_names <- function(sample_names){
+  paste(sapply(strsplit(sample_names, "__"), "[",1), sapply(strsplit(sample_names, "__"), "[",3), sep = "__")
+}
+```
+
+```{r echo=F}
+# If there are duplicated samples within primer plates,  don't run this chunk!
+#TODO: check, how import should be done if replicates are in the same PP or in different PPs 
+
+rownames(template$samples) <- change_names(rownames(template$samples))
+rownames(template$pcrs)<- change_names(rownames(template$pcrs))
+template$pcrs$sample_id <- change_names(template$pcrs$sample_id)
+rownames(template$reads) <- change_names(rownames(template$reads))
+template$pcrs$plate_col <- as.numeric(template$pcrs$plate_col)
+```
+
+# Check of performance
+
+Number of samples, reads, motus and taxa in the library
+
+```{r}
+show_stats(template)
+```
+
+Number of samples with 4 replicates
+
+```{r}
+data.frame(table(gsub("__PP[1-4]", "", template$pcrs[,"sample_id"]))) %>%  group_by(Freq) %>% summarise(N_samples = n())
+```
+
+Number of reads and MOTUs in controls and samples
+
+```{r}
+# Compute the number of reads per pcr
+template$pcrs$nb_reads <- rowSums(template$reads)
+
+# Compute the number of motus per pcr
+template$pcrs$nb_motus <- rowSums(template$reads>0)
+check1 <- melt(template$pcrs[,c("control_type", "nb_reads", "nb_motus")])
+check1[is.na(check1$control_type),"control_type"] = "sample"
+ggplot(data <- check1, aes(x=control_type, y=value, color=control_type)) + 
+  geom_boxplot() + theme_bw() + 
+  geom_jitter(alpha=0.2) + 
+  scale_color_manual(values = c("brown", "red", "cyan4","pink", "darkgreen"), na.value = "darkgrey") +
+  facet_wrap(~variable, scales = "free_y") + 
+  theme(axis.text.x = element_text(angle=45, h=1))
+```
+
+Visualization of plate design and read count
+
+```{r}
+ggpcrplate(template)
+```
+
+Number of reads and MOTUs per taxon in the whole library.
+
+```{r echo=F}
+template$motus %>% group_by(scientific_name) %>% summarize(Read_n = sum(count), occurence = n()) %>% arrange(desc(Read_n))
+```
+
+Visualization of the positive control composition
+
+```{r echo = F}
+
+## get the theorical composition
+ctl_pos_theo <- read.csv(file.path(lib_dir, "pos_control_vert.csv"), header = T, 
+                           stringsAsFactors = F, dec = ".")
+ctl_pos_theo[,"CP"] <- ctl_pos_theo$CP/sum(ctl_pos_theo$CP)
+ctl_pos_theo <- ctl_pos_theo[,c("name", "CP")]
+names(ctl_pos_theo) <- c("motus", "value")
+ctl_pos_theo["control"] <- "theoric_control"
+ctl_pos_theo["taxon"] <- ctl_pos_theo["motus"]
+
+## get the positive control value
+ctl_pos_name <- rownames(template$pcrs[template$pcrs$type=="control" & template$pcrs$control_type=="positive",])
+## remove motus which are not present in the positive control
+ctl_pos <- t(template$reads[ctl_pos_name, which(colSums(template$reads[ctl_pos_name,])>0)])
+
+
+
+## rename motus by motus_nb_scientific_name
+rownames(ctl_pos) <- paste("motus", 1:length(rownames(ctl_pos)), template$motus[rownames(ctl_pos),"scientific_name"], sep="_")
+
+ctl_pos <- ctl_pos[!grepl("_NA", rownames(ctl_pos)), ]
+
+## get the relative abundance
+ctl_pos <- as.matrix(sweep(ctl_pos, STATS = colSums(ctl_pos), FUN = "/", MARGIN = 2))
+
+## build the dataframe for ggplot
+to_plot <- as.data.frame(do.call(rbind, lapply(colnames(ctl_pos), function(ctlname){ 
+  return(data.frame("control"=rep(ctlname, length(names(ctl_pos[,ctlname]))), 
+                    "motus"=names(ctl_pos[,ctlname]),
+                    "value"= as.vector(ctl_pos[,ctlname]), 
+                    "taxon"=gsub("motus_[0-9]+_", "", names(ctl_pos[,ctlname])),
+                    stringsAsFactors = F))
+  })))
+
+
+## ordering the motus value to sort motus in stack barchart for experiment data
+to_plot <- to_plot[order(to_plot$control),]
+to_plot$motus <- reorder(to_plot$motus, to_plot$value)
+to_plot$motus <- factor(to_plot$motus, levels=rev(levels(to_plot$motus)))
+
+## ordering the motus value to sort motus in stack barchart for theorical data
+theo_data <- ctl_pos_theo[,c("control", "motus", "value", "taxon")]
+theo_data$motus <- factor(theo_data$motus)
+
+## merge experimental and theorical data
+to_plot <- rbind(theo_data, to_plot)
+## define the control name order to keep order in x-axis
+to_plot$control <- factor(to_plot$control, levels = unique(to_plot$control))
+plot_pal <- pal[1-length(unique(to_plot$taxon))]
+names(plot_pal) <- sort(unique(to_plot$taxon))
+
+to_plot$taxon <- factor(to_plot$taxon, levels=names(plot_pal))
+
+## plot the barchart
+ggplot(to_plot, aes(x=control, y=value, order=motus, fill=taxon)) +
+  #scale_fill_manual(name = "taxon", values = plot_pal) +
+  geom_bar(inherit.aes = T, stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5))+
+        # legend.position = "none") +
+  ggtitle("Distribution of motus in positive control before obiclean filtering")
+```
+
+```{r echo=F}
+rm(to_plot)
+rm(ctl_pos)
+rm(ctl_pos_theo)
+rm(theo_data)
+rm(ctl_pos_name)
+```
+
+Proportion of MOTUs in positive control replicates
+
+```{r}
+# get the positive control value
+ctl_pos_name <- rownames(template$pcrs[template$pcrs$type=="control" & template$pcrs$control_type=="positive",])
+## remove motus which are not present in the positive control
+ctl_pos <- t(template$reads[ctl_pos_name, which(colSums(template$reads[ctl_pos_name,])>0)])
+
+## get the relative abundance
+ctl_pos <- as.matrix(sweep(ctl_pos, STATS = colSums(ctl_pos), FUN = "/", MARGIN = 2))
+
+abund_motus <- ctl_pos[order(-rowSums(ctl_pos)),][1:10,]
+data.frame(template$motus[rownames(abund_motus), "scientific_name"],
+           abund_motus)
+```
+
+```{r echo=FALSE}
+rm(ctl_pos)
+rm(ctl_pos_name)
+```
+
+TODO:
+
+Visualize ratio of contamination or predator sequence per replicate.
+
+# Filtering
+
+## Removal of host MOTUs (and if needed, human)
+
+```{r}
+# here replace Canis to the host taxon if needed
+template <- subset_metabarlist(template, "motus", !template$motus$scientific_name %in% c("Canis", "Canis lupus","Canis lupus familiaris"))
+template <- subset_metabarlist(template, "pcrs", rowSums(template$reads)>0)
+show_stats(template)
+```
+
+## Obiclean annotation filtering
+
+We filter out:
+
+All internal sequences. Sequences not identified as "head" in ≥3
+replicates, or "singleton" in 4 replicates, or "head" in ≥2 and
+singleton ≥1 replicates, or "head" in ≥1 and singleton ≥3 replicates in
+at least one sample.
+
+```{r echo=F}
+filter_mat <- template$motus[,grep("obiclean_status", names(template$motus), value = T)]
+names(filter_mat) <- gsub("obiclean_status:","", names(filter_mat))
+names(filter_mat) <- change_names(names(filter_mat))
+filter_mat[rownames(template$reads)[!rownames(template$reads) %in% colnames(filter_mat)]] <- NA
+filter_mat <- filter_mat[,rownames(template$reads)]
+
+samples <- unique(sapply(strsplit(template$pcrs[template$pcrs$type=="sample","sample_id"], "__"), "[",1))
+pos <- unique(gsub("__PP[1-4]", "", template$pcrs[template$pcrs$type=="control" & template$pcrs$control_type=="positive", "sample_id"]))
+
+##sample
+sample_filtering <- do.call(cbind, lapply(samples, function(sample_name){
+  apply(filter_mat[, grep(sample_name, colnames(filter_mat))], 1, function(row){
+    freq <- table(row)
+    any(freq["h"]>=3 | freq["s"]==4 | (freq["h"]>=2 & freq["s"]>=1) |
+          (freq["s"]>=3 & freq["h"]>=1), na.rm = T)
+  })
+}))
+colnames(sample_filtering) <- samples
+
+## pos
+pos_filtering <- do.call(cbind, lapply(pos, function(pos_name){
+  apply(filter_mat[, grep(pos_name, colnames(filter_mat))], 1, function(row){
+    freq <- table(row)
+    any(freq["h"]>=3 | freq["s"]==4 | (freq["h"]>=2 & freq["s"]>=1) |
+          (freq["s"]>=3 & freq["h"]>=1), na.rm = T)
+  })
+}))
+colnames(pos_filtering) <- pos
+
+
+filtering <- cbind(sample_filtering, pos_filtering)
+
+
+samples_names <- colnames(filter_mat)[gsub("__PP[1-4]", "",
+                                           colnames(filter_mat)) %in% colnames(filtering)]
+
+filter_mat[,samples_names] <- filtering[, gsub("__PP[1-4]", "", samples_names)]
+
+## control
+
+ctl <- unique(gsub("__PP[1-4]", "", template$pcrs[template$pcrs$type=="control" & template$pcrs$control_type %in% c("pcr", "extraction"),"sample_id"]))
+#ctl <- unique(sapply(strsplit(template$pcrs[template$pcrs$type=="control" & template$pcrs$control_type %in% c("pcr", "extraction"),"sample_id"], "_"), "[",1))
+ctl_filtering <- do.call(cbind, lapply(ctl, function(ctl_col_name){
+  apply(filter_mat[, grep(ctl_col_name, colnames(filter_mat)), drop=F], 1, function(row){
+    freq <- table(row)
+    any(freq["h"]>=3 | freq["s"]==4 | (freq["h"]>=2 & freq["s"]>=1) |
+          (freq["s"]>=3 & freq["h"]>=1), na.rm = T)
+  })
+}))
+colnames(ctl_filtering) <- ctl
+
+
+ctl_names <- colnames(filter_mat)[gsub("__PP[1-4]", "",
+                                       colnames(filter_mat)) %in% colnames(ctl_filtering)]
+
+filter_mat[, ctl_names] <- ctl_filtering[, gsub("__PP[1-4]", "", ctl_names)]
+
+## blanks
+blk <- template$pcrs[template$pcrs$type=="control" & template$pcrs$control_type == "sequencing", "sample_id"]
+blk_filtering <- do.call(cbind, lapply(blk, function(blk_col_name){
+  apply(filter_mat[, grep(blk_col_name, colnames(filter_mat)), drop=F], 1, function(row){
+    !is.na(row) & (row=="s" | row=="h")
+  })
+}))
+colnames(blk_filtering) <- blk
+
+
+blk_names <- colnames(filter_mat)[colnames(filter_mat) %in% colnames(blk_filtering)]
+filter_mat[, blk_names] <- blk_filtering[, blk_names]
+
+filter_mat <- t(filter_mat)
+
+saveRDS(filter_mat, file = file.path(lib_dir, "template-Mamm02_filtering_matrix.rds"))
+```
+
+### Stat on removed motus by obiclean
+
+```{r echo=FALSE}
+filter_mat <- readRDS("/Users/elena/PycharmProjects/ngs_pipelines/template/template-Mamm02_filtering_matrix.rds")
+obiclean_remove <- template$reads
+obiclean_remove[(filter_mat)] <- 0
+cols_sum <- colSums(obiclean_remove)
+```
+
+### Proportion of removed reads by replicates
+
+```{r}
+to_plot <- (rowSums(obiclean_remove)/rowSums(template$reads))[order(names(rowSums(obiclean_remove)))]
+barplot(to_plot[!is.na(to_plot)], xaxt='n', 
+        main="Proportion of removed reads by replicates", cex.main=1,  xlab = "replicates", ylab = "proportion of removed reads")
+
+```
+
+### Number of removed reads in each MOTu
+
+```{r}
+barplot(cols_sum, xaxt='n', 
+        main="Distribution of reads in removed motus", 
+        cex.main=1, xlab = "MOTUs", ylab = "nb reads")
+```
+
+### Distribution of removed reads in motus
+
+This plot shows number of removed MOTUs (y axis) and their read count (x
+axis) in two scales: - number of reads \> 0 shows how many MOTUs with
+low read count were removed - number of reads \> 500 shows more abundant
+MOTUs
+
+```{r}
+to_plot <- data.frame("value"=cols_sum[cols_sum>0],
+                    "seq_name"=colnames(obiclean_remove)[cols_sum>0],
+                    "filter"=rep("nb reads > 0", length(cols_sum[cols_sum>0])))
+to_plot <- rbind(to_plot, data.frame("value"=cols_sum[cols_sum>500],
+                    "seq_name"=colnames(obiclean_remove)[cols_sum>500],
+                    "filter"=rep("nb reads > 500", length(cols_sum[cols_sum>500]))))
+
+ggplot(to_plot, aes(x=value)) + 
+  geom_histogram(bins=100, color="black", fill="white") +
+  facet_wrap(~filter, scale = "free", ncol = 2) +
+  theme(plot.title = element_text(hjust = 0.5))+
+  ggtitle("Distribution of removed motus with obiclean data") + xlab("number of reads") + ylab("number of motus")
+
+rm(to_plot)
+rm(cols_sum)
+rm(obiclean_remove)
+```
+
+### Apply obiclean filtering
+
+```{r echo=F, fig.width=12, warning=FALSE}
+
+obi_res <- template$reads
+obi_res[!filter_mat] <- 0
+
+template$samples <- data.frame(template$pcrs$sample_id) # added this to avoid an error by subset metabarlist
+row.names(template$samples) <- template$pcrs$sample_id
+
+
+clean_data <- subset_metabarlist(template, "motus", 
+                                 colSums(obi_res)>0)
+clean_data$reads <- obi_res[,colnames(clean_data$reads)]
+
+
+clean_data <- subset_metabarlist(clean_data, "pcrs", rowSums(clean_data$reads)>0)
+
+
+```
+
+### Plot pcr template after the obiclean filtering
+
+```{r}
+ggpcrplate(clean_data)
+```
+
+## Filtering low frequency noise (based on POS)
+
+### Visualize the composition of positive control after obiclean filtering
+
+```{r fig.height=6, fig.width=12, message=TRUE, warning=TRUE, echo=FALSE}
+## get the theorical composition
+ctl_pos_theo <- read.csv(file.path(lib_dir, "pos_control_vert.csv"), header = T, 
+                           stringsAsFactors = F, dec = ".")
+ctl_pos_theo[,"CP"] <- ctl_pos_theo$CP/sum(ctl_pos_theo$CP)
+ctl_pos_theo <- ctl_pos_theo[,c("name", "CP")]
+names(ctl_pos_theo) <- c("motus", "value")
+ctl_pos_theo["control"] <- "theoric_control"
+ctl_pos_theo["taxon"] <- ctl_pos_theo["motus"]
+
+
+## get the positive control value
+ctl_pos_name <- rownames(clean_data$pcrs[clean_data$pcrs$type=="control" & clean_data$pcrs$control_type=="positive",])
+## remove motus which are not present in the positive control
+ctl_pos <- t(clean_data$reads[ctl_pos_name, which(colSums(clean_data$reads[ctl_pos_name,])>0)])
+
+## rename motus by motus_nb_scientific_name
+rownames(ctl_pos) <- paste("motus", 1:length(rownames(ctl_pos)), clean_data$motus[rownames(ctl_pos),"scientific_name"], sep="_")
+
+## get the relative abundance
+ctl_pos <- as.matrix(sweep(ctl_pos, STATS = colSums(ctl_pos), FUN = "/", MARGIN = 2))
+
+## build the dataframe for ggplot
+to_plot <- as.data.frame(do.call(rbind, lapply(colnames(ctl_pos), function(ctlname){ 
+  return(data.frame("control"=rep(ctlname, length(names(ctl_pos[,ctlname]))), 
+                    "motus"=names(ctl_pos[,ctlname]),
+                    "value"= as.vector(ctl_pos[,ctlname]), 
+                    "taxon"=gsub("motus_[0-9]+_", "", names(ctl_pos[,ctlname])),
+                    stringsAsFactors = F))
+  })))
+
+## ordering the motus value to sort motus in stack barchart for experiment data
+to_plot <- to_plot[order(to_plot$control),]
+to_plot$motus <- reorder(to_plot$motus, to_plot$value)
+to_plot$motus <- factor(to_plot$motus, levels=rev(levels(to_plot$motus)))
+
+## ordering the motus value to sort motus in stack barchart for theorical data
+theo_data <- ctl_pos_theo[,c("control", "motus", "value", "taxon")]
+theo_data$motus <- reorder(theo_data$motus, theo_data$value)
+theo_data$motus <- factor(theo_data$motus, levels=rev(levels(theo_data$motus)))
+
+## merge experimental and theorical data
+to_plot <- rbind(theo_data, to_plot)
+## define the control name order to keep order in x-axis
+to_plot$control <- factor(to_plot$control, levels = unique(to_plot$control))
+
+## define the motus order to sort in stack barchart
+to_plot$motus <- reorder(to_plot$motus, to_plot$value)
+to_plot$motus <- factor(to_plot$motus, levels=rev(levels(to_plot$motus)))
+
+plot_pal2 <- plot_pal[sort(unique(to_plot$taxon))]
+to_plot$taxon <- factor(to_plot$taxon, levels=names(plot_pal2))
+
+## plot the barchart
+ggplot(to_plot, aes(x=control, y=value, order=motus, fill=taxon)) +
+  #scale_fill_manual(name = "taxon", values = plot_pal2) +
+  geom_bar(inherit.aes = T, stat = "identity", colour="black") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Distribution of motus in positive control after obiclean filtering")
+
+
+rm(to_plot)
+```
+
+### Information about the most abundant motus
+
+```{r}
+# CHECK: the name of "best_identity" column, it may be different in different runs.
+# get the positive control value
+ctl_pos_name <- rownames(clean_data$pcrs[clean_data$pcrs$type=="control" & clean_data$pcrs$control_type=="positive",])
+## remove motus which are not present in the positive control
+ctl_pos <- t(clean_data$reads[ctl_pos_name, which(colSums(clean_data$reads[ctl_pos_name,])>0)])
+
+
+## get the relative abundance
+ctl_pos <- as.matrix(sweep(ctl_pos, STATS = colSums(ctl_pos), FUN = "/", MARGIN = 2))
+abund_motus <- ctl_pos[order(-rowSums(ctl_pos)),][1:20,]
+data.frame(clean_data$motus[rownames(abund_motus), 
+                         c("best_identity:db_Mamm02_genbank249", "scientific_name", "species_list:db_Mamm02_genbank249")],
+           abund_motus)
+```
+
+### Filter the motus with low abundance in the positive control
+
+Number of removed reads per replicate
+
+```{r fig.height=10, fig.width=12, message=FALSE, warning=FALSE, echo = F}
+threshold <- min(abund_motus[3,]) # the lowesr proportion of the 3th the most abundant motu
+tmp <- clean_data$reads/rowSums(clean_data$reads)
+tmp[is.na(tmp)] <- 0
+removeData <- clean_data
+removeData$reads[tmp>threshold] <- 0
+ggpcrplate(removeData)
+```
+
+The threshold is `r threshold`, which is the minimum value of the 3th
+motu in positive control (we expect to see just 3 taxa)
+
+**If the threshold value is low, for Mamm02 and V5 markers we use
+threshold = 0.05**
+
+```{r}
+if (threshold < 0.05){
+  threshold = 0.05}
+  
+```
+
+### Apply the filter
+
+```{r}
+clean_data$reads[tmp<threshold] <- 0  
+clean_data <- subset_metabarlist(clean_data, "motus", colSums(clean_data$reads)>0)
+clean_data <- subset_metabarlist(clean_data, "pcrs", rowSums(clean_data$reads)>0)
+show_stats(clean_data)
+```
+
+### Visualize the composition positive control after low abundance filtering
+
+```{r fig.height=6, fig.width=12, message=TRUE, warning=TRUE, echo = F}
+
+## get the positive control value
+ctl_pos_name <- rownames(clean_data$pcrs[clean_data$pcrs$type=="control" & clean_data$pcrs$control_type=="positive",])
+## remove motus which are not present in the positive control
+ctl_pos <- t(clean_data$reads[ctl_pos_name, which(colSums(clean_data$reads[ctl_pos_name,])>0)])
+
+## rename motus by motus_nb_scientific_name
+rownames(ctl_pos) <- paste("motus", 1:length(rownames(ctl_pos)), clean_data$motus[rownames(ctl_pos),"scientific_name"], sep="_")
+
+## get the relative abundance
+ctl_pos <- as.matrix(sweep(ctl_pos, STATS = colSums(ctl_pos), FUN = "/", MARGIN = 2))
+
+## build the dataframe for ggplot
+to_plot <- as.data.frame(do.call(rbind, lapply(colnames(ctl_pos), function(ctlname){ 
+  return(data.frame("control"=rep(ctlname, length(names(ctl_pos[,ctlname]))), 
+                    "motus"=names(ctl_pos[,ctlname]),
+                    "value"= as.vector(ctl_pos[,ctlname]), 
+                    "taxon"=gsub("motus_[0-9]+_", "", names(ctl_pos[,ctlname])),
+                    stringsAsFactors = F))
+  })))
+
+## ordering the motus value to sort motus in stack barchart for experiment data
+to_plot <- to_plot[order(to_plot$control),]
+to_plot$motus <- reorder(to_plot$motus, to_plot$value)
+to_plot$motus <- factor(to_plot$motus, levels=rev(levels(to_plot$motus)))
+
+## ordering the motus value to sort motus in stack barchart for theorical data
+theo_data <- ctl_pos_theo[,c("control", "motus", "value", "taxon")]
+theo_data$motus <- reorder(theo_data$motus, theo_data$value)
+theo_data$motus <- factor(theo_data$motus, levels=rev(levels(theo_data$motus)))
+
+## merge experimental and theorical data
+to_plot <- rbind(theo_data, to_plot)
+## define the control name order to keep order in x-axis
+to_plot$control <- factor(to_plot$control, levels = unique(to_plot$control))
+
+## define the motus order to sort in stack barchart
+to_plot$motus <- reorder(to_plot$motus, to_plot$value)
+to_plot$motus <- factor(to_plot$motus, levels=rev(levels(to_plot$motus)))
+
+plot_pal2 <- plot_pal[sort(unique(to_plot$taxon))]
+to_plot$taxon <- factor(to_plot$taxon, levels=names(plot_pal2))
+
+## plot the barchart
+ggplot(to_plot, aes(x=control, y=value, order=motus, fill=taxon)) +
+  #scale_fill_manual(name = "taxon", values = plot_pal2) +
+  geom_bar(inherit.aes = T, stat = "identity", colour="black") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Distribution of motus in positive control after obiclean filtering")
+
+```
+
+### Plot pcr plate after the filtering with positive control
+
+```{r  message=FALSE, warning=FALSE}
+ggpcrplate(clean_data)
+```
+
+## Check controls
+
+Here we check controls to detect contaminant sequences if present.
+
+### Sequencing controls (MOTUs)
+
+```{r message=FALSE, warning=FALSE, echo=F}
+blk_conta <- subset_metabarlist(clean_data, "pcrs", 
+                                clean_data$pcrs$type=="control" & 
+                                           clean_data$pcrs$control_type=="sequencing")
+
+clean_data$motus[,"in_blank"] <- FALSE
+clean_data$motus[colnames(blk_conta$reads),"in_blank"] <- TRUE
+
+out <- data.frame(cbind("taxid"=blk_conta$motus[colnames(blk_conta$reads), "taxid"], 
+                        t(blk_conta$reads)))
+
+out <- cbind("taxid"=out$taxid,
+      "total"=rowSums(mutate_all(out[, -which(colnames(out)=="taxid")], as.numeric)), 
+      out[,-1])
+
+taxmap <- unique(blk_conta$motus[colnames(blk_conta$reads[,colSums(blk_conta$reads)>0]),
+                               c("taxid", "scientific_name")])
+#taxmap <- cbind(taxmap["taxid"],  format_ecotag_path(taxmap$path, c("superkingdom", "kingdom", "phylum", "class", "family", "genus", "species")),"scientific_name (rank)"=paste(taxmap[,"scientific_name"], "(", taxmap[,"rank"], ")", sep =" "))
+
+out["sequence_id"] <- rownames(out)
+
+conta <- merge(taxmap, out, by = "taxid")
+conta <- conta[order(-conta$total),]
+rownames(conta) <- NULL
+data.frame(conta["sequence_id"], conta[which(colnames(conta) != "sequence_id")])
+
+rm(blk_conta)
+rm(taxmap)
+rm(out)
+rm(conta)
+```
+
+### Extraction controls (MOTUs)
+
+```{r message=FALSE, warning=FALSE, echo=F}
+blk_conta <- subset_metabarlist(clean_data, "pcrs", 
+                                clean_data$pcrs$type=="control" & 
+                                           clean_data$pcrs$control_type=="extraction")
+
+clean_data$motus[,"in_blank"] <- FALSE
+clean_data$motus[colnames(blk_conta$reads),"in_blank"] <- TRUE
+
+out <- data.frame(cbind("taxid"=blk_conta$motus[colnames(blk_conta$reads), "taxid"], 
+                        t(blk_conta$reads)))
+
+out <- cbind("taxid"=out$taxid,
+      "total"=rowSums(mutate_all(out[, -which(colnames(out)=="taxid")], as.numeric)), 
+      out[,-1])
+
+taxmap <- unique(blk_conta$motus[colnames(blk_conta$reads),c("taxid", "scientific_name")])
+#taxmap <- cbind(taxmap["taxid"],  format_ecotag_path(taxmap$path, c("superkingdom", "kingdom", "phylum", "class", "family", "genus", "species")),"scientific_name (rank)"=paste(taxmap[,"scientific_name"], "(", taxmap[,"rank"], ")", sep =" "))
+
+out["sequence_id"] <- rownames(out)
+
+conta <- merge(taxmap, out, by = "taxid")
+conta <- conta[order(-conta$total),]
+rownames(conta) <- NULL
+data.frame(conta["sequence_id"], conta[which(colnames(conta) != "sequence_id")])
+
+rm(blk_conta)
+rm(taxmap)
+rm(out)
+rm(conta)
+```
+
+### PCR controls (MOTUs)
+
+```{r message=FALSE, warning=FALSE, echo=F}
+blk_conta <- subset_metabarlist(clean_data, "pcrs", 
+                                clean_data$pcrs$type=="control" & 
+                                           clean_data$pcrs$control_type=="pcr")
+
+clean_data$motus[,"in_blank"] <- FALSE
+clean_data$motus[colnames(blk_conta$reads),"in_blank"] <- TRUE
+
+out <- data.frame(cbind("taxid"=blk_conta$motus[colnames(blk_conta$reads), "taxid"], 
+                        t(blk_conta$reads)))
+
+out <- cbind("taxid"=out$taxid,
+      "total"=rowSums(mutate_all(out[, -which(colnames(out)=="taxid")], as.numeric)), 
+      out[,-1])
+
+taxmap <- unique(blk_conta$motus[colnames(blk_conta$reads[,colSums(blk_conta$reads)>0]),
+                               c("taxid", "scientific_name")])
+#taxmap <- cbind(taxmap["taxid"],  format_ecotag_path(taxmap$path, c("superkingdom", "kingdom", "phylum", "class", "family", "genus", "species")),"scientific_name (rank)"=paste(taxmap[,"scientific_name"], "(", taxmap[,"rank"], ")", sep =" "))
+
+out["sequence_id"] <- rownames(out)
+
+conta <- merge(taxmap, out, by = "taxid")
+conta <- conta[order(-conta$total),]
+rownames(conta) <- NULL
+data.frame(conta["sequence_id"], conta[which(colnames(conta) != "sequence_id")])
+
+rm(blk_conta)
+rm(taxmap)
+rm(out)
+rm(conta)
+```
+
+### Check control abundance
+
+```{r fig.height=12, fig.width=14, message=FALSE, warning=FALSE}
+control_names <- rownames(clean_data$pcrs[clean_data$pcrs$type=="control" & 
+                                         clean_data$pcrs$control_type!="positive",])
+control_plot <- data.frame("plate"=clean_data$pcrs[control_names, "plate_no"], 
+                      "sample"=gsub("s_", "", control_names),
+                      "nb_read"=rowSums(clean_data$reads[control_names, ]),
+                      "control_type"=clean_data$pcrs[control_names, "control_type"],
+                      stringsAsFactors = F)
+
+ggplot(control_plot, 
+       aes(x = sample, y=nb_read, fill=control_type)) +
+  geom_bar(stat="identity", na.rm = TRUE) +
+  facet_wrap(~plate, scale = "free_x") +
+  scale_y_continuous(expand = c(0,0), limits = c(0, max(control_plot$nb_read) + 1000)) +
+   geom_text(aes(label=nb_read), 
+             position=position_dodge(width=0.9), 
+             vjust=-0.25) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10, 
+                                   vjust = 0.5), 
+        plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Distribution of control replicates read number for each pcr plate")
+
+rm(control_plot)
+rm(control_names)
+```
+
+### Boxplot of reads count sample type
+
+```{r}
+# Compute the number of reads per pcr
+clean_data$pcrs$nb_reads <- rowSums(clean_data$reads)
+
+# Compute the number of motus per pcr
+clean_data$pcrs$nb_motus <- rowSums(clean_data$reads>0)
+check1 <- melt(clean_data$pcrs[,c("control_type", "nb_reads", "nb_motus")])
+check1[is.na(check1$control_type),"control_type"] = "sample"
+ggplot(data <- check1, aes(x=control_type, y=value, color=control_type)) + 
+  geom_boxplot() + theme_bw() + 
+  geom_jitter(alpha=0.2) + 
+  scale_color_manual(values = c("brown", "red", "cyan4","pink", "darkgreen"), na.value = "darkgrey") +
+  facet_wrap(~variable, scales = "free_y") + 
+  theme(axis.text.x = element_text(angle=45, h=1))
+```
+
+## Remove replicates with low number of reads (based on NEG)
+
+The threshold depends on the data - median if there are outliars in NEG,
+maximum if the data are homogenous.
+
+todo: add positive controls for comparison
+
+```{r}
+#saveRDS(clean_data, file = file.path(lib_dir, "template_clean_data1.rds"))
+#clean_data <- readRDS(file = file.path(lib_dir,  "template_clean_data1.rds"))
+
+to_plot_sample <- data.frame("sample"=gsub("s_", "",
+                                    rownames(clean_data$pcrs[clean_data$pcrs$type=="sample",])),
+                      "nb_read"=rowSums(clean_data$reads[rownames(clean_data$pcrs[clean_data$pcrs$type=="sample",]),]),
+                      "type"=rep("sample", 
+                                 length(rownames(clean_data$pcrs[clean_data$pcrs$type=="sample",]))),
+                      stringsAsFactors = F)
+to_plot_ctl <- data.frame("sample"=gsub("s_", "",
+                                    rownames(clean_data$pcrs[clean_data$pcrs$type=="control"& clean_data$pcrs$control_type != "positive",])),
+                      "nb_read"=rowSums(clean_data$reads[rownames(clean_data$pcrs[clean_data$pcrs$type=="control" & clean_data$pcrs$control_type != "positive" ,]),]),
+                      "type"=rep("control", length(rownames(clean_data$pcrs[clean_data$pcrs$type=="control"& clean_data$pcrs$control_type != "positive",]))),
+                      stringsAsFactors = F)
+
+to_plot <- rbind(to_plot_sample, to_plot_ctl)
+# threshold_filter <- ifelse(is.na(summary(to_plot_ctl[to_plot_ctl$nb_read>0, "nb_read"])[""]), 0, summary(to_plot_ctl[to_plot_ctl$nb_read>0, "nb_read"])["Median"])
+threshold_filter <- max(rowSums(clean_data$reads[rownames(clean_data$pcrs[clean_data$pcrs$type=="control" & clean_data$pcrs$control_type != "positive" ,]),]))
+
+
+
+ggplot(to_plot, aes(x=nb_read)) + 
+  facet_wrap(~type, ncol = 2) +
+  geom_histogram(bins = 100, color="black", fill="white") +
+  geom_vline(xintercept = threshold_filter, color = "red", size=.5) +
+  ggtitle("Distribution of read number by replicate for library template")+ y_lab("nb of replicates")
+
+rm(to_plot_ctl)
+rm(to_plot_sample)
+rm(to_plot)
+```
+
+Plot is made for all the negative controls. The threshold filter =
+`r threshold_filter` reads (this is a max read count among all the
+negative controls, can be replaced with median if needed).
+
+```{r message=FALSE, warning=FALSE}
+
+clean_data <- subset_metabarlist(clean_data, "reads", rowSums(clean_data$reads)>threshold_filter)
+#rm(threshold_filter)
+```
+
+## Remove samples based on the number of replicates
+
+Filtering out samples that have 2 or less replicates (less then 50%)
+
+```{r message=FALSE, warning=FALSE}
+clean_data1$pcrs$sample_name <- sapply(strsplit(clean_data$pcrs$sample_id, "__"), "[",1)
+sample_stat <- table(clean_data1$pcrs[, "sample_name"]) #changed this - do filtering  for all samples and controls
+clean_data1 <- subset_metabarlist(clean_data1, "samples", sapply(strsplit(rownames(clean_data1$samples), "__"), "[",1) %in% names(sample_stat[sample_stat>2]))
+show_stats(clean_data1)
+```
+
+```{r}
+samples <- subset_metabarlist(clean_data1, "pcrs",clean_data1$pcrs$type=="sample")
+```
+
+## Remove motus based on p/a in replicates
+
+Keep motus observed in more than 50% replicates per sample
+
+```{r message=T, warning=T}
+to_check_replicate <- clean_data1$reads
+
+to_check_replicate[to_check_replicate>0] <- 1
+
+check_mat <- do.call(rbind, lapply(gsub("__PP[1-4]", "", rownames(to_check_replicate)), function(sample_name){
+  apply(to_check_replicate[grep(sample_name, rownames(to_check_replicate)),], 2, function(row){
+    freq <- table(row)
+     !is.na(freq["1"]) & freq["1"]/length(row) > 0.5
+  })
+}))
+rownames(check_mat) <- rownames(to_check_replicate)
+
+
+to_check_replicate[!check_mat] <- 0
+ifelse(!any(colSums(to_check_replicate)==0), "no motus have been removed",
+       paste(length(colSums(to_check_replicate)[colSums(to_check_replicate)==0]), 
+             "motus have been removed"))
+```
+
+## Remove sequences based on best identity
+
+Filtering the motus on the best identity value against database (\>0.9)
+
+```{r message=FALSE, warning=FALSE}
+#Check: name of best_identity column may be different in different runs.
+
+colnames(clean_data$motus)[colnames(clean_data$motus)=="best_identity:db_Mamm02_genbank249"] <- "best_identity"
+clean_data1 <- subset_metabarlist(clean_data, "motus", clean_data$motus$best_identity >= 0.9)
+```
+
+# Todo: Construction a consensus profile for each sample
+
+# Check filtering results
+
+### Box plot with read count for controls and samlpes.
+
+Number of samples, reads, motus and taxa in the library
+
+```{r echo=FALSE}
+clean_data1$reads[!check_mat] <- 0
+result <- subset_metabarlist(clean_data1, "motus", colSums(clean_data1$reads)>0)
+result <- subset_metabarlist(result, "pcrs", rowSums(result$reads)>0)
+
+rm(check_mat)
+show_stats(result)
+```
+
+```{r fig.height=6, fig.width=8, echo=F}
+sample_table <- aggregate(result$reads, list(sample=gsub("__PP[1-4]", "", 
+                                                         rownames(result$reads))), 
+                          sum)
+rownames(sample_table) <- sample_table$sample
+sample_table <- sample_table[-1]
+
+
+mapping <- setNames(result$motus$scientific_name,rownames(result$motus))
+current_colnames <- colnames(sample_table)
+new_colnames <- mapping[current_colnames]
+new_colnames <- make.unique(new_colnames)
+new_colnames[is.na(new_colnames)] <- current_colnames[is.na(new_colnames)]
+colnames(sample_table) <- new_colnames
+```
+
+### Barplot of number of replicates per sample
+
+```{r}
+rep_tot <- table(sapply(strsplit(template$pcrs[, "sample_id"], "__"), "[",1))
+good_sample <- table(sapply(strsplit(result$pcrs[, "sample_id"], "__"), "[",1))
+
+remove_rep <-sapply(strsplit(rownames(template$pcrs)[!rownames(template$pcrs) %in% rownames(result$pcrs)], "__"), "[",1)
+bad_sample <- table(sapply(strsplit(template$pcrs[remove_rep %in% sapply(strsplit(rownames(template$pcrs)[!rownames(template$pcrs) %in% rownames(result$pcrs)], "__"), "[",1), "sample_id"], "__"), "[",1))
+to_plot <- data.frame("sample"=names(c(good_sample, bad_sample)), 
+                      "value"=as.vector(c(good_sample, bad_sample)),
+                      "status"=c(rep("replicating",
+                                     length(good_sample)),
+                                 rep("not replicating", 
+                                     length(bad_sample))))
+p <- ggplot(to_plot, 
+       aes(x=sample, y=value, fill=status, order=sample)) + 
+  geom_bar(stat="identity", width = 1) +
+  scale_fill_brewer(palette="Dark2", direction=-1) +
+  scale_x_discrete(limits = rev(levels(to_plot$sample)), 
+                   expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 4)) +
+  ylab("number of replicate") +
+  theme(axis.text.y = element_text(size=5), 
+        plot.title = element_text(hjust = 0.5),
+        panel.grid = element_blank(),
+        panel.border = element_blank()) +
+  coord_flip() +
+  ggtitle("Distribution of replicates for each sample after quality filter")
+
+ggplotly(p)
+```
+
+```{r}
+result <- subset_metabarlist(result, "pcrs",result$pcrs$type=="sample")
+```
+
+### Statistics of sample abundance
+
+```{r}
+stat <- summary(rowSums(sample_table))
+stat
+```
+
+### Barplots with MOTUS' read count and proportions for all categories
+
+TODO: add proportion of MOTUS
+
+remove poorly performed samples if needed
+
+```{r fig.height=6, fig.width=8, echo=FALSE}
+
+sample_table <- aggregate(result$reads, list(sample=gsub("__PP[1-4]", "", 
+                                                         rownames(result$reads))), 
+                          sum)
+rownames(sample_table) <- sample_table$sample
+sample_table <- sample_table[-1]
+
+mapping <- setNames(result$motus$scientific_name,rownames(result$motus))
+current_colnames <- colnames(sample_table)
+new_colnames <- mapping[current_colnames]
+new_colnames <- make.unique(new_colnames)
+new_colnames[is.na(new_colnames)] <- current_colnames[is.na(new_colnames)]
+colnames(sample_table) <- new_colnames
+
+
+
+to_plot <- as.data.frame(do.call(rbind, lapply(rownames(sample_table), function(samplename){ 
+  data.frame("sample"=rep(samplename, length(sample_table[samplename, ])), 
+               "motus"=colnames(sample_table),
+               "value"=as.vector(t(sample_table)[,samplename]), stringsAsFactors = F)
+  })))
+
+to_plot <- to_plot[to_plot$value>0,]
+  
+nColor <- length(unique(to_plot$motus))
+set.seed(47)
+myColor <- randomcoloR::distinctColorPalette(k = nColor)
+
+  
+p <- ggplot(to_plot[to_plot$value>0,], aes(x=sample, y=value, fill=motus, 
+                                      order=sample)) + 
+  scale_fill_grey() + 
+  geom_bar(stat = "identity", position = "stack") +
+  geom_hline(yintercept = stat["1st Qu."], color="red") +
+  scale_y_continuous(expand = c(0,0)) +
+  theme(axis.text.x=element_text(angle=90, hjust=1, size=5), 
+        plot.title = element_text(hjust = 0.5)) +
+  guides(fill="none") +
+  scale_fill_manual(values = myColor) + 
+  ggtitle("Motus distribution in sample (sample composition)")
+p_plotly <- ggplotly(p)
+p_plotly
+```
+
+Aggregate replicate into sample by sum and transform to presence/absence
+matrix
+
+```{r }
+result <- subset_metabarlist(result, "pcrs", 
+                                result$pcrs$type=="sample")
+result <- subset_metabarlist(result, "reads", 
+                                result$pcrs$type=="sample")
+
+saveRDS(result, file = file.path(lib_dir, "template_Mamm02.rds"))
+sample_table <- aggregate(result$reads, list(sample=gsub("__PP[1-4]", "", 
+                                                         rownames(result$reads))), 
+                          sum)
+rownames(sample_table) <- sample_table$sample
+sample_table <- sample_table[-1]
+
+sample_table[sample_table>0] <- 1
+write.csv2(t(sample_table), file = file.path(lib_dir,
+                                             "template_Mamm02.csv") , 
+           row.names = T)
+
+```
+
+### Descriptive statistics
+
+Calculated for biological samples only.
+
+```{r}
+replicates <- rownames(template$reads[rownames(template$pcrs[template$pcrs$type=="sample",]),])
+samples <- unique(gsub("__PP[0-9]+", "", replicates))
+
+data.frame("stat"=c("Total number of samples ", "Number of kept samples", 
+                    "Total number of replicates", "Number of kept replicates",
+                    "number of taxa", "number of motus", "min replicate size",
+                    "mean replicate size", "max replicate size"),
+           "value"=c(length(samples),
+                     length(samples[samples %in% unique(gsub("__PP[1-4]", "",
+             length(replicates),
+                     length(replicates[replicates %in% rownames(result$reads)]),
+                      rownames(result$samples)))]),
+                     length(unique(result$motus$scientific_name)),
+                     length(rownames(result$motus)),
+                     min(rowSums(result$reads)),
+                     round(mean(rowSums(result$reads))),
+                     max(rowSums(result$reads)))
+           )
+## TODO add read count for sample
+rm(replicates)
+rm(samples)
+
+```
+
+### Motus in the final dataset
+
+```{r}
+# need this step to calculate number of samples per motu
+rrr <- result$reads
+rrr <- rrr>0
+rrr <- as.data.frame(rrr)
+rrr$samples <- gsub("__PP[1-4]", "", rownames(rrr))
+rrr <- rrr  %>% group_by(samples) %>%
+  summarise(across(starts_with("A"), ~any(.))) %>% select(-samples)
+
+
+data.frame("Taxa name"= result$motus$scientific_name, "Total number of reads" =colSums(result$reads), "Number of PCRs" = colSums(result$reads>0),  "Number of samples" = colSums(rrr), "Best ID score" = result$motus$best_identity, "Species list" = result$motus$`species_list:db_Mamm02_genbank249`, "sequence" = result$motus$sequence, row.names = NULL )
+```
+
+## Summary
+
+We removed:
+
+-   Host sequences.
+-   Sequences based on obitools annotation: Sequences not identified as
+    "head" in ≥3 replicates, or "singleton" in 4 replicates, or "head"
+    in ≥2 and singleton ≥1 replicates, or "head" in ≥1 and singleton ≥3
+    replicates in at least one sample.
+-   Sequences with a per replicate read frequency below a set threshold,
+    based on the abundance sequences in positive control OR \< 0.05
+-   Replicates with total read count below a threshold set by evaluating
+    read distribution in the samples and negative controls (max number
+    of reads in control, `r threshold_filter`).
+-   Sequences with identity \<90% over the entire query sequence length
+    with any reference sequence
+-   Samples with ≤2 replicates
+-   Sequences observed in ≤50% replicates of a sample
