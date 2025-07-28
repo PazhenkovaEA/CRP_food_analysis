@@ -9,3 +9,21 @@ Example of usage:
  
  Arguments: Marker name, primerF, primerR, number of errors allowed, minimum length, max length.
  
+## Demuptiplex reads
+
+Requires OBITools3 installed and activated.
+
+Example of usage:
+python obitools3_metabar.py --project=./DAB192 --library=DAB192 --reads1=./DAB192/ReadsF.fastq.gz --reads2=./ReadsR.fastq.gz --primers=./primers_tags/primersMetabar.csv 
+
+## Taxa identification
+
+Requires OBITools2 installed and activated.
+
+Example of usage:
+./ecotag_obi2.sh Tele04 DAB192 90 db_Tele04.fasta
+
+## Filtering
+
+R Markdown file "1_report_Mamm02_templ.Rmd" can serve as a template for filtering procedure.
+
